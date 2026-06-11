@@ -95,8 +95,9 @@ async function saveGameProgress(useBeacon = false) {
   
   if (useBeacon && navigator.sendBeacon) {
     try {
-      const blob = new Blob([JSON.stringify(gameState)], { type: 'application/json' });
-      navigator.sendBeacon(`${API_BASE_URL}/game/save`, blob);
+      const formData = new FormData();
+      formData.append('data', JSON.stringify(gameState));
+      navigator.sendBeacon(`${API_BASE_URL}/game/save-beacon`, formData);
       return;
     } catch (e) {
       console.warn('sendBeacon失败，使用fetch:', e);
@@ -208,14 +209,26 @@ function restoreGameSession(session) {
   
   renderCards(cardIds);
   
+  const pendingFlipped = [];
+  
   cards.forEach((card, index) => {
     if (session.matchedIndices && session.matchedIndices.includes(index)) {
       card.classList.add('flipped', 'matched');
     } else if (session.flippedIndices && session.flippedIndices.includes(index)) {
       card.classList.add('flipped');
-      flippedCards.push(card);
+      pendingFlipped.push(card);
     }
   });
+  
+  if (pendingFlipped.length === 2) {
+    setTimeout(() => {
+      pendingFlipped.forEach(card => {
+        card.classList.remove('flipped');
+      });
+    }, 500);
+  } else {
+    flippedCards = pendingFlipped;
+  }
   
   movesEl.textContent = moves;
   matchedEl.textContent = `${matchedPairs}/8`;

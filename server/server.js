@@ -7,6 +7,7 @@ const PORT = 6033;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, '../client')));
 
 const CARD_PAIRS = 8;
@@ -62,7 +63,7 @@ app.get('/api/leaderboard', (req, res) => {
   res.json({ leaderboard: leaderboard });
 });
 
-app.post('/api/game/save', (req, res) => {
+function saveSession(sessionData) {
   const {
     playerId,
     playerName,
@@ -73,10 +74,10 @@ app.post('/api/game/save', (req, res) => {
     moves,
     elapsedTime,
     gameStarted
-  } = req.body;
+  } = sessionData;
 
   if (!playerId) {
-    return res.status(400).json({ error: 'Missing player ID' });
+    return false;
   }
 
   gameSessions.set(playerId, {
@@ -92,7 +93,34 @@ app.post('/api/game/save', (req, res) => {
     savedAt: Date.now()
   });
 
+  return true;
+}
+
+app.post('/api/game/save', (req, res) => {
+  const success = saveSession(req.body);
+  
+  if (!success) {
+    return res.status(400).json({ error: 'Missing player ID' });
+  }
+
   res.json({ success: true });
+});
+
+app.post('/api/game/save-beacon', (req, res) => {
+  try {
+    let sessionData;
+    if (req.body && req.body.data) {
+      sessionData = JSON.parse(req.body.data);
+    } else {
+      sessionData = req.body;
+    }
+    
+    saveSession(sessionData);
+  } catch (e) {
+    console.error('Beacon save error:', e);
+  }
+  
+  res.status(204).end();
 });
 
 app.get('/api/game/load', (req, res) => {
