@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const path = require('path');
 
@@ -11,6 +11,7 @@ app.use(express.static(path.join(__dirname, '../client')));
 
 const CARD_PAIRS = 8;
 let leaderboard = [];
+let gameSessions = new Map();
 
 function shuffle(array) {
   const arr = [...array];
@@ -34,13 +35,13 @@ app.post('/api/score', (req, res) => {
   const { time, playerName } = req.body;
   
   if (typeof time !== 'number' || time <= 0) {
-    return res.status(400).json({ error: '鏃犳晥鐨勬垚缁╂暟鎹? });
+    return res.status(400).json({ error: 'Invalid score data' });
   }
 
   const entry = {
     id: Date.now(),
     time: time,
-    playerName: playerName || '鍖垮悕鐜╁',
+    playerName: playerName || 'Anonymous',
     date: new Date().toLocaleString('zh-CN')
   };
 
@@ -61,6 +62,69 @@ app.get('/api/leaderboard', (req, res) => {
   res.json({ leaderboard: leaderboard });
 });
 
+app.post('/api/game/save', (req, res) => {
+  const {
+    playerId,
+    playerName,
+    cards,
+    flippedIndices,
+    matchedIndices,
+    matchedPairs,
+    moves,
+    elapsedTime,
+    gameStarted
+  } = req.body;
+
+  if (!playerId) {
+    return res.status(400).json({ error: 'Missing player ID' });
+  }
+
+  gameSessions.set(playerId, {
+    playerId,
+    playerName: playerName || '',
+    cards: cards || [],
+    flippedIndices: flippedIndices || [],
+    matchedIndices: matchedIndices || [],
+    matchedPairs: matchedPairs || 0,
+    moves: moves || 0,
+    elapsedTime: elapsedTime || 0,
+    gameStarted: gameStarted || false,
+    savedAt: Date.now()
+  });
+
+  res.json({ success: true });
+});
+
+app.get('/api/game/load', (req, res) => {
+  const { playerId } = req.query;
+
+  if (!playerId) {
+    return res.status(400).json({ error: 'Missing player ID' });
+  }
+
+  const session = gameSessions.get(playerId);
+
+  if (!session) {
+    return res.json({ success: false, message: 'No saved game progress found' });
+  }
+
+  res.json({
+    success: true,
+    session: session
+  });
+});
+
+app.post('/api/game/reset', (req, res) => {
+  const { playerId } = req.body;
+
+  if (!playerId) {
+    return res.status(400).json({ error: 'Missing player ID' });
+  }
+
+  gameSessions.delete(playerId);
+  res.json({ success: true });
+});
+
 app.listen(PORT, () => {
-  console.log(`鏈嶅姟鍣ㄨ繍琛屽湪 http://localhost:${PORT}`);
+  console.log(`Server running at http://localhost:${PORT}`);
 });

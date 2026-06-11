@@ -36,11 +36,194 @@ let startTime = null;
 let elapsedTime = 0;
 let gameStarted = false;
 let isProcessing = false;
+let playerId = '';
+let cardIds = [];
+let saveTimer = null;
+
+function getOrCreatePlayerId() {
+  let pid = localStorage.getItem('memory_game_player_id');
+  if (!pid) {
+    pid = 'player_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    localStorage.setItem('memory_game_player_id', pid);
+  }
+  return pid;
+}
+
+function getCurrentCardState() {
+  const flippedIndices = [];
+  const matchedIndices = [];
+  
+  cards.forEach((card, index) => {
+    if (card.classList.contains('matched')) {
+      matchedIndices.push(index);
+    } else if (card.classList.contains('flipped')) {
+      flippedIndices.push(index);
+    }
+  });
+  
+  return { flippedIndices, matchedIndices };
+}
+
+function buildGameState() {
+  if (!playerId) return null;
+  
+  const { flippedIndices, matchedIndices } = getCurrentCardState();
+  const playerName = playerNameInput ? playerNameInput.value.trim() : '';
+  
+  return {
+    playerId: playerId,
+    playerName: playerName,
+    cards: cardIds,
+    flippedIndices: flippedIndices,
+    matchedIndices: matchedIndices,
+    matchedPairs: matchedPairs,
+    moves: moves,
+    elapsedTime: elapsedTime,
+    gameStarted: gameStarted
+  };
+}
+
+async function saveGameProgress(useBeacon = false) {
+  const gameState = buildGameState();
+  if (!gameState) return;
+  
+  try {
+    localStorage.setItem(`memory_game_save_${playerId}`, JSON.stringify(gameState));
+  } catch (e) {
+    console.warn('localStorage保存失败:', e);
+  }
+  
+  if (useBeacon && navigator.sendBeacon) {
+    try {
+      const blob = new Blob([JSON.stringify(gameState)], { type: 'application/json' });
+      navigator.sendBeacon(`${API_BASE_URL}/game/save`, blob);
+      return;
+    } catch (e) {
+      console.warn('sendBeacon失败，使用fetch:', e);
+    }
+  }
+  
+  try {
+    await fetch(`${API_BASE_URL}/game/save`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(gameState)
+    });
+  } catch (error) {
+    console.error('服务器保存进度失败:', error);
+  }
+}
+
+function scheduleSave() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+  }
+  saveTimer = setTimeout(() => {
+    saveGameProgress();
+  }, 300);
+}
+
+async function loadGameProgress() {
+  if (!playerId) return null;
+  
+  let serverSession = null;
+  try {
+    const response = await fetch(`${API_BASE_URL}/game/load?playerId=${encodeURIComponent(playerId)}`);
+    const data = await response.json();
+    
+    if (data.success && data.session) {
+      serverSession = data.session;
+    }
+  } catch (error) {
+    console.error('从服务器加载进度失败:', error);
+  }
+  
+  let localSession = null;
+  try {
+    const localData = localStorage.getItem(`memory_game_save_${playerId}`);
+    if (localData) {
+      localSession = JSON.parse(localData);
+    }
+  } catch (e) {
+    console.error('从localStorage加载进度失败:', e);
+  }
+  
+  if (serverSession && localSession) {
+    return (serverSession.savedAt || 0) >= (localSession.savedAt || 0) ? serverSession : localSession;
+  }
+  
+  return serverSession || localSession;
+}
+
+async function resetGameProgress() {
+  if (!playerId) return;
+  
+  try {
+    localStorage.removeItem(`memory_game_save_${playerId}`);
+  } catch (e) {
+    console.warn('清除localStorage进度失败:', e);
+  }
+  
+  try {
+    await fetch(`${API_BASE_URL}/game/reset`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ playerId: playerId })
+    });
+  } catch (error) {
+    console.error('重置服务器进度失败:', error);
+  }
+}
 
 async function initGame() {
+  playerId = getOrCreatePlayerId();
+  
+  const savedSession = await loadGameProgress();
+  
+  if (savedSession && savedSession.cards && savedSession.cards.length > 0 && savedSession.matchedPairs < 8) {
+    restoreGameSession(savedSession);
+  } else {
+    resetGameState();
+    const shuffledCards = await fetchShuffledCards();
+    renderCards(shuffledCards);
+  }
+}
+
+function restoreGameSession(session) {
   resetGameState();
-  const shuffledCards = await fetchShuffledCards();
-  renderCards(shuffledCards);
+  
+  cardIds = session.cards;
+  matchedPairs = session.matchedPairs;
+  moves = session.moves;
+  elapsedTime = session.elapsedTime;
+  gameStarted = session.gameStarted;
+  
+  if (session.playerName) {
+    playerNameInput.value = session.playerName;
+  }
+  
+  renderCards(cardIds);
+  
+  cards.forEach((card, index) => {
+    if (session.matchedIndices && session.matchedIndices.includes(index)) {
+      card.classList.add('flipped', 'matched');
+    } else if (session.flippedIndices && session.flippedIndices.includes(index)) {
+      card.classList.add('flipped');
+      flippedCards.push(card);
+    }
+  });
+  
+  movesEl.textContent = moves;
+  matchedEl.textContent = `${matchedPairs}/8`;
+  updateTimerDisplay();
+  
+  if (gameStarted && matchedPairs < 8) {
+    startTimer();
+  }
 }
 
 function resetGameState() {
@@ -51,10 +234,16 @@ function resetGameState() {
   elapsedTime = 0;
   gameStarted = false;
   isProcessing = false;
+  cardIds = [];
   
   if (timer) {
     clearInterval(timer);
     timer = null;
+  }
+  
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
   }
   
   updateTimerDisplay();
@@ -67,9 +256,10 @@ async function fetchShuffledCards() {
   try {
     const response = await fetch(`${API_BASE_URL}/shuffle`);
     const data = await response.json();
+    cardIds = data.cards;
     return data.cards;
   } catch (error) {
-    console.error('鑾峰彇娲楃墝鏁版嵁澶辫触:', error);
+    console.error('获取洗牌数据失败:', error);
     const fallbackCards = [];
     for (let i = 1; i <= 8; i++) {
       fallbackCards.push(i, i);
@@ -78,6 +268,7 @@ async function fetchShuffledCards() {
       const j = Math.floor(Math.random() * (i + 1));
       [fallbackCards[i], fallbackCards[j]] = [fallbackCards[j], fallbackCards[i]];
     }
+    cardIds = fallbackCards;
     return fallbackCards;
   }
 }
@@ -94,7 +285,7 @@ function renderCards(cardIds) {
     
     const cardFront = document.createElement('div');
     cardFront.className = 'card-face card-front';
-    cardFront.textContent = CARD_EMOJIS[cardId] || '鉂?;
+    cardFront.textContent = CARD_EMOJIS[cardId] || '鉂?';
     
     card.appendChild(cardBack);
     card.appendChild(cardFront);
@@ -124,6 +315,8 @@ function handleCardClick(card) {
     moves++;
     movesEl.textContent = moves;
     checkMatch();
+  } else {
+    scheduleSave();
   }
 }
 
@@ -150,6 +343,7 @@ function checkMatch() {
       matchedEl.textContent = `${matchedPairs}/8`;
       flippedCards = [];
       isProcessing = false;
+      scheduleSave();
       
       if (matchedPairs === 8) {
         endGame();
@@ -161,6 +355,7 @@ function checkMatch() {
       unflipCard(card2);
       flippedCards = [];
       isProcessing = false;
+      scheduleSave();
     }, 1000);
   }
 }
@@ -187,13 +382,15 @@ function endGame() {
   finalTimeEl.textContent = timerEl.textContent;
   finalMovesEl.textContent = moves;
   
+  saveGameProgress();
+  
   setTimeout(() => {
     winModal.classList.remove('hidden');
   }, 500);
 }
 
 async function submitScore() {
-  const playerName = playerNameInput.value.trim() || '鍖垮悕鐜╁';
+  const playerName = playerNameInput.value.trim() || '匿名玩家';
   const timeInSeconds = Math.floor(elapsedTime / 1000);
 
   try {
@@ -211,13 +408,14 @@ async function submitScore() {
     const data = await response.json();
     
     if (data.success) {
-      alert(`鎭枩锛佷綘鎺掑悕绗?${data.rank} 鍚嶏紒`);
+      await resetGameProgress();
+      alert(`恭喜！你排名第 ${data.rank} 名！`);
       winModal.classList.add('hidden');
       showLeaderboard();
     }
   } catch (error) {
-    console.error('鎻愪氦鎴愮哗澶辫触:', error);
-    alert('鎻愪氦鎴愮哗澶辫触锛岃绋嶅悗閲嶈瘯');
+    console.error('提交成绩失败:', error);
+    alert('提交成绩失败，请稍后重试');
   }
 }
 
@@ -227,8 +425,8 @@ async function showLeaderboard() {
     const data = await response.json();
     renderLeaderboard(data.leaderboard);
   } catch (error) {
-    console.error('鑾峰彇鎺掕姒滃け璐?', error);
-    leaderboardList.innerHTML = '<li>鍔犺浇鎺掕姒滃け璐?/li>';
+    console.error('获取排行榜失败:', error);
+    leaderboardList.innerHTML = '<li>加载排行榜失败</li>';
   }
   
   leaderboardModal.classList.remove('hidden');
@@ -236,7 +434,7 @@ async function showLeaderboard() {
 
 function renderLeaderboard(leaderboard) {
   if (!leaderboard || leaderboard.length === 0) {
-    leaderboardList.innerHTML = '<li class="empty-message">鏆傛棤璁板綍锛屽揩鏉ユ寫鎴樺惂锛?/li>';
+    leaderboardList.innerHTML = '<li class="empty-message">暂无记录，快来挑战吧！</li>';
     return;
   }
 
@@ -262,15 +460,31 @@ function renderLeaderboard(leaderboard) {
   });
 }
 
-restartBtn.addEventListener('click', initGame);
-playAgainBtn.addEventListener('click', () => {
-  winModal.classList.add('hidden');
+restartBtn.addEventListener('click', async () => {
+  await resetGameProgress();
   initGame();
 });
+
+playAgainBtn.addEventListener('click', async () => {
+  winModal.classList.add('hidden');
+  await resetGameProgress();
+  initGame();
+});
+
 leaderboardBtn.addEventListener('click', showLeaderboard);
 closeLeaderboardBtn.addEventListener('click', () => {
   leaderboardModal.classList.add('hidden');
 });
 submitScoreBtn.addEventListener('click', submitScore);
+
+window.addEventListener('beforeunload', () => {
+  saveGameProgress(true);
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    saveGameProgress(true);
+  }
+});
 
 initGame();
