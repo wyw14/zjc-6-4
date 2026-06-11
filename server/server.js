@@ -73,11 +73,19 @@ function saveSession(sessionData) {
     matchedPairs,
     moves,
     elapsedTime,
-    gameStarted
+    gameStarted,
+    savedAt
   } = sessionData;
 
   if (!playerId) {
     return false;
+  }
+
+  const existing = gameSessions.get(playerId);
+  const newSavedAt = savedAt || Date.now();
+  
+  if (existing && existing.savedAt && existing.savedAt > newSavedAt) {
+    return true;
   }
 
   gameSessions.set(playerId, {
@@ -90,14 +98,34 @@ function saveSession(sessionData) {
     moves: moves || 0,
     elapsedTime: elapsedTime || 0,
     gameStarted: gameStarted || false,
-    savedAt: Date.now()
+    savedAt: newSavedAt
   });
 
   return true;
 }
 
+function parseSessionFromRequest(req) {
+  if (req.body && typeof req.body === 'object' && req.body.playerId) {
+    return req.body;
+  }
+  if (req.body && req.body.data) {
+    try {
+      return JSON.parse(req.body.data);
+    } catch (e) {
+      return null;
+    }
+  }
+  return null;
+}
+
 app.post('/api/game/save', (req, res) => {
-  const success = saveSession(req.body);
+  const sessionData = parseSessionFromRequest(req);
+  
+  if (!sessionData) {
+    return res.status(400).json({ error: 'Missing or invalid data' });
+  }
+  
+  const success = saveSession(sessionData);
   
   if (!success) {
     return res.status(400).json({ error: 'Missing player ID' });
@@ -108,14 +136,10 @@ app.post('/api/game/save', (req, res) => {
 
 app.post('/api/game/save-beacon', (req, res) => {
   try {
-    let sessionData;
-    if (req.body && req.body.data) {
-      sessionData = JSON.parse(req.body.data);
-    } else {
-      sessionData = req.body;
+    const sessionData = parseSessionFromRequest(req);
+    if (sessionData) {
+      saveSession(sessionData);
     }
-    
-    saveSession(sessionData);
   } catch (e) {
     console.error('Beacon save error:', e);
   }

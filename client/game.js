@@ -79,7 +79,8 @@ function buildGameState() {
     matchedPairs: matchedPairs,
     moves: moves,
     elapsedTime: elapsedTime,
-    gameStarted: gameStarted
+    gameStarted: gameStarted,
+    savedAt: Date.now()
   };
 }
 
@@ -93,15 +94,35 @@ async function saveGameProgress(useBeacon = false) {
     console.warn('localStorage保存失败:', e);
   }
   
-  if (useBeacon && navigator.sendBeacon) {
+  const jsonStr = JSON.stringify(gameState);
+  
+  if (useBeacon) {
     try {
-      const formData = new FormData();
-      formData.append('data', JSON.stringify(gameState));
-      navigator.sendBeacon(`${API_BASE_URL}/game/save-beacon`, formData);
+      await fetch(`${API_BASE_URL}/game/save`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: jsonStr,
+        keepalive: true
+      });
       return;
     } catch (e) {
-      console.warn('sendBeacon失败，使用fetch:', e);
+      console.warn('fetch keepalive失败，尝试sendBeacon:', e);
     }
+    
+    if (navigator.sendBeacon) {
+      try {
+        const params = new URLSearchParams();
+        params.append('data', jsonStr);
+        const blob = new Blob([params.toString()], { type: 'application/x-www-form-urlencoded' });
+        navigator.sendBeacon(`${API_BASE_URL}/game/save-beacon`, blob);
+        return;
+      } catch (e) {
+        console.warn('sendBeacon也失败:', e);
+      }
+    }
+    return;
   }
   
   try {
@@ -110,7 +131,7 @@ async function saveGameProgress(useBeacon = false) {
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(gameState)
+      body: jsonStr
     });
   } catch (error) {
     console.error('服务器保存进度失败:', error);
